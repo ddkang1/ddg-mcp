@@ -1,4 +1,12 @@
 import asyncio
+import sys
+import traceback
+import re
+import urllib.parse
+from datetime import datetime, timedelta
+
+import httpx
+from bs4 import BeautifulSoup
 
 from mcp.server.models import InitializationOptions
 import mcp.types as types
@@ -6,6 +14,104 @@ from mcp.server import NotificationOptions, Server
 from pydantic import AnyUrl
 import mcp.server.stdio
 from duckduckgo_search import DDGS
+
+# ----------------------------
+# Utilities for fetching web content
+# ----------------------------
+
+class RateLimiter:
+    def __init__(self, requests_per_minute: int = 30):
+        self.requests_per_minute = requests_per_minute
+        self.requests = []
+
+    async def acquire(self):
+        now = datetime.now()
+        # Remove requests older than 1 minute
+        self.requests = [
+            req for req in self.requests if now - req < timedelta(minutes=1)
+        ]
+
+        if len(self.requests) >= self.requests_per_minute:
+            # Wait until we can make another request
+            wait_time = 60 - (now - self.requests[0]).total_seconds()
+            if wait_time > 0:
+                await asyncio.sleep(wait_time)
+
+        self.requests.append(now)
+
+# A minimal context for logging used by the content fetcher.
+class DummyContext:
+    async def info(self, message: str) -> None:
+        # For now, simply print to stdout (or integrate with your logging)
+        print(f"[INFO] {message}")
+
+    async def error(self, message: str) -> None:
+        # For now, simply print to stderr (or integrate with your logging)
+        print(f"[ERROR] {message}", file=sys.stderr)
+
+class WebContentFetcher:
+    def __init__(self):
+        self.rate_limiter = RateLimiter(requests_per_minute=20)
+
+    async def fetch_and_parse(self, url: str, ctx: DummyContext) -> str:
+        """Fetch and parse content from a webpage"""
+        try:
+            await self.rate_limiter.acquire()
+            await ctx.info(f"Fetching content from: {url}")
+
+            async with httpx.AsyncClient() as client:
+                response = await client.get(
+                    url,
+                    headers={
+                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+                    },
+                    follow_redirects=True,
+                    timeout=30.0,
+                )
+                response.raise_for_status()
+
+            # Parse the HTML
+            soup = BeautifulSoup(response.text, "html.parser")
+
+            # Remove script, style, and several structural elements
+            for element in soup(["script", "style", "nav", "header", "footer"]):
+                element.decompose()
+
+            # Get the text content
+            text = soup.get_text()
+
+            # Clean up the text
+            lines = (line.strip() for line in text.splitlines())
+            chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
+            text = " ".join(chunk for chunk in chunks if chunk)
+
+            # Remove extra whitespace
+            text = re.sub(r"\s+", " ", text).strip()
+
+            # Truncate if too long
+            if len(text) > 8000:
+                text = text[:8000] + "... [content truncated]"
+
+            await ctx.info(f"Successfully fetched and parsed content ({len(text)} characters)")
+            return text
+
+        except httpx.TimeoutException:
+            await ctx.error(f"Request timed out for URL: {url}")
+            return "Error: The request timed out while trying to fetch the webpage."
+        except httpx.HTTPError as e:
+            await ctx.error(f"HTTP error occurred while fetching {url}: {str(e)}")
+            return f"Error: Could not access the webpage ({str(e)})"
+        except Exception as e:
+            await ctx.error(f"Error fetching content from {url}: {str(e)}")
+            traceback.print_exc(file=sys.stderr)
+            return f"Error: An unexpected error occurred while fetching the webpage ({str(e)})"
+
+# Create an instance of WebContentFetcher for use in the tool handler.
+fetcher = WebContentFetcher()
+
+# ----------------------------
+# MCP Server and Tool Implementations
+# ----------------------------
 
 server = Server("ddg-mcp")
 
@@ -168,6 +274,18 @@ async def handle_list_tools() -> list[types.Tool]:
                     "model": {"type": "string", "enum": ["gpt-4o-mini", "llama-3.3-70b", "claude-3-haiku", "o3-mini", "mistral-small-3"], "description": "AI model to use", "default": "gpt-4o-mini"},
                 },
                 "required": ["keywords"],
+            },
+        ),
+        # New tool for fetching webpage content
+        types.Tool(
+            name="ddg-fetch-content",
+            description="Fetch and parse content from a webpage URL",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string", "description": "The webpage URL to fetch content from"},
+                },
+                "required": ["url"],
             },
         ),
     ]
@@ -399,7 +517,22 @@ async def handle_call_tool(
                 text=f"DuckDuckGo AI ({model}) response:\n\n{result}",
             )
         ]
-    
+
+    elif name == "ddg-fetch-content":
+        url = arguments.get("url")
+        if not url:
+            raise ValueError("Missing url")
+        
+        # Create a dummy context to enable logging in the fetcher.
+        ctx = DummyContext()
+        content = await fetcher.fetch_and_parse(url, ctx)
+        return [
+            types.TextContent(
+                type="text",
+                text=f"Fetched content from '{url}':\n\n{content}",
+            )
+        ]
+
     else:
         raise ValueError(f"Unknown tool: {name}")
 
