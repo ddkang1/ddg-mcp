@@ -247,7 +247,19 @@ async def handle_call_tool(
             license_image=license_image,
             max_results=max_results
         )
-        
+
+        # Helper to guess mime type based on file extension
+        def guess_mime_type(url: str) -> str:
+            lower_url = url.lower()
+            if lower_url.endswith(".png"):
+                return "image/png"
+            elif lower_url.endswith(".gif"):
+                return "image/gif"
+            elif lower_url.endswith(".svg"):
+                return "image/svg+xml"
+            # Default to jpeg if uncertain
+            return "image/jpeg"
+
         # Format results
         formatted_results = f"Image search results for '{keywords}':\n\n"
         
@@ -267,10 +279,12 @@ async def handle_call_tool(
             
             image_url = result.get('image')
             if image_url:
+                mime_type = guess_mime_type(image_url)
                 image_results.append(
                     types.ImageContent(
                         type="image",
-                        url=image_url,
+                        data=image_url,             # Instead of "url", use "data"
+                        mimeType=mime_type,         # Provide the mimeType field
                         alt_text=result.get('title', 'Image search result')
                     )
                 )
