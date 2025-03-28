@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 
 import httpx
 from bs4 import BeautifulSoup
+from fake_useragent import UserAgent
 
 from mcp.server.models import InitializationOptions
 import mcp.types as types
@@ -63,13 +64,12 @@ class WebContentFetcher:
                 response = await client.get(
                     url,
                     headers = {
-                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                                    "Chrome/103.0.0.0 Safari/537.36",
+                        "User-Agent": self.ua.random,
                         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
                         "Accept-Language": "en-US,en;q=0.9",
                         "Accept-Encoding": "gzip, deflate, br",
                         "Connection": "keep-alive",
+                        "Referer": "https://pmc.ncbi.nlm.nih.gov/",
                     },
                     follow_redirects=True,
                     timeout=30.0,
