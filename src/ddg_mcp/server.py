@@ -264,18 +264,18 @@ async def handle_list_tools() -> list[types.Tool]:
                 "required": ["keywords"],
             },
         ),
-        types.Tool(
-            name="ddg-ai-chat",
-            description="Chat with DuckDuckGo AI",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "keywords": {"type": "string", "description": "Message or question to send to the AI"},
-                    "model": {"type": "string", "enum": ["gpt-4o-mini", "llama-3.3-70b", "claude-3-haiku", "o3-mini", "mistral-small-3"], "description": "AI model to use", "default": "gpt-4o-mini"},
-                },
-                "required": ["keywords"],
-            },
-        ),
+        # types.Tool(
+        #     name="ddg-ai-chat",
+        #     description="Chat with DuckDuckGo AI",
+        #     inputSchema={
+        #         "type": "object",
+        #         "properties": {
+        #             "keywords": {"type": "string", "description": "Message or question to send to the AI"},
+        #             "model": {"type": "string", "enum": ["gpt-4o-mini", "llama-3.3-70b", "claude-3-haiku", "o3-mini", "mistral-small-3"], "description": "AI model to use", "default": "gpt-4o-mini"},
+        #         },
+        #         "required": ["keywords"],
+        #     },
+        # ),
         # New tool for fetching webpage content
         types.Tool(
             name="ddg-fetch-content",
@@ -497,26 +497,26 @@ async def handle_call_tool(
             )
         ]
     
-    elif name == "ddg-ai-chat":
-        keywords = arguments.get("keywords")
-        if not keywords:
-            raise ValueError("Missing keywords")
+    # elif name == "ddg-ai-chat":
+    #     keywords = arguments.get("keywords")
+    #     if not keywords:
+    #         raise ValueError("Missing keywords")
         
-        model = arguments.get("model", "gpt-4o-mini")
+    #     model = arguments.get("model", "gpt-4o-mini")
         
-        # Perform AI chat
-        ddgs = DDGS()
-        result = ddgs.chat(
-            keywords=keywords,
-            model=model
-        )
+    #     # Perform AI chat
+    #     ddgs = DDGS()
+    #     result = ddgs.chat(
+    #         keywords=keywords,
+    #         model=model
+    #     )
         
-        return [
-            types.TextContent(
-                type="text",
-                text=f"DuckDuckGo AI ({model}) response:\n\n{result}",
-            )
-        ]
+    #     return [
+    #         types.TextContent(
+    #             type="text",
+    #             text=f"DuckDuckGo AI ({model}) response:\n\n{result}",
+    #         )
+    #     ]
 
     elif name == "ddg-fetch-content":
         url = arguments.get("url")
