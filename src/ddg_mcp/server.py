@@ -53,50 +53,51 @@ class DummyContext:
 class WebContentFetcher:
     def __init__(self):
         self.rate_limiter = RateLimiter(requests_per_minute=20)
+        # Initialize fake user agent
+        self.ua = UserAgent()
 
     async def fetch_and_parse(self, url: str, ctx: DummyContext) -> str:
-        """Fetch and parse content from a webpage"""
+        """Fetches and parses the content from the given URL."""
         try:
             await self.rate_limiter.acquire()
             await ctx.info(f"Fetching content from: {url}")
 
+            # Generate a random User-Agent for every request
+            headers = {
+                "User-Agent": self.ua.random,
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+                "Accept-Language": "en-US,en;q=0.9",
+                "Accept-Encoding": "gzip, deflate, br",
+                "Connection": "keep-alive",
+                "Referer": "https://pmc.ncbi.nlm.nih.gov/",
+            }
+
             async with httpx.AsyncClient() as client:
                 response = await client.get(
                     url,
-                    headers = {
-                        "User-Agent": self.ua.random,
-                        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-                        "Accept-Language": "en-US,en;q=0.9",
-                        "Accept-Encoding": "gzip, deflate, br",
-                        "Connection": "keep-alive",
-                        "Referer": "https://pmc.ncbi.nlm.nih.gov/",
-                    },
+                    headers=headers,
                     follow_redirects=True,
                     timeout=30.0,
                 )
                 response.raise_for_status()
 
-            # Parse the HTML
+            # Parse the HTML content
             soup = BeautifulSoup(response.text, "html.parser")
 
             # Remove script, style, and several structural elements
             for element in soup(["script", "style", "nav", "header", "footer"]):
                 element.decompose()
 
-            # Get the text content
+            # Extract and clean up text
             text = soup.get_text()
-
-            # Clean up the text
             lines = (line.strip() for line in text.splitlines())
             chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
             text = " ".join(chunk for chunk in chunks if chunk)
-
-            # Remove extra whitespace
             text = re.sub(r"\s+", " ", text).strip()
 
             # Truncate if too long
-            if len(text) > 8000:
-                text = text[:8000] + "... [content truncated]"
+            # if len(text) > 8000:
+            #     text = text[:8000] + "... [content truncated]"
 
             await ctx.info(f"Successfully fetched and parsed content ({len(text)} characters)")
             return text
