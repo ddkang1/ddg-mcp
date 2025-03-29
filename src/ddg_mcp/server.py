@@ -57,7 +57,7 @@ class WebContentFetcher:
         self.ua = UserAgent()
 
     async def fetch_and_parse(self, url: str, ctx: DummyContext) -> str:
-        """Fetches and parses the content from the given URL."""
+        """Fetches and parses only the visible text content from the given URL."""
         try:
             await self.rate_limiter.acquire()
             await ctx.info(f"Fetching content from: {url}")
@@ -81,18 +81,32 @@ class WebContentFetcher:
                 )
                 response.raise_for_status()
 
-            # Parse the HTML content
             soup = BeautifulSoup(response.text, "html.parser")
 
-            # Remove script, style, and several structural elements
-            for element in soup(["script", "style", "nav", "header", "footer"]):
-                element.decompose()
+            # Define a helper function to filter out non-visible elements.
+            def is_visible(element):
+                # Exclude tags from which we don't need any text.
+                if element.parent.name in [
+                    'style',
+                    'script',
+                    'head',
+                    'title',
+                    'meta',
+                    '[document]',
+                    'nav',
+                    'header',
+                    'footer'
+                ]:
+                    return False
+                # Optionally, skip over comments or purely whitespace
+                if isinstance(element, (BeautifulSoup.Comment, )):
+                    return False
+                return True
 
-            # Extract and clean up text
-            text = soup.get_text()
-            lines = (line.strip() for line in text.splitlines())
-            chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
-            text = " ".join(chunk for chunk in chunks if chunk)
+            # Get all text nodes and filter out those that are not visible.
+            texts = soup.find_all(string=True)
+            visible_texts = filter(is_visible, texts)
+            text = " ".join(t.strip() for t in visible_texts if t.strip())
             text = re.sub(r"\s+", " ", text).strip()
 
             # Truncate if too long
