@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 import httpx
 from bs4 import BeautifulSoup, Comment
 from fake_useragent import UserAgent
+from readability import Document 
 
 from mcp.server.models import InitializationOptions
 import mcp.types as types
@@ -20,6 +21,7 @@ from duckduckgo_search import DDGS
 # Utilities for fetching web content
 # ----------------------------
 
+# RateLimiter to ensure we don't exceed request limits.
 class RateLimiter:
     def __init__(self, requests_per_minute: int = 30):
         self.requests_per_minute = requests_per_minute
@@ -28,16 +30,11 @@ class RateLimiter:
     async def acquire(self):
         now = datetime.now()
         # Remove requests older than 1 minute
-        self.requests = [
-            req for req in self.requests if now - req < timedelta(minutes=1)
-        ]
-
+        self.requests = [req for req in self.requests if now - req < timedelta(minutes=1)]
         if len(self.requests) >= self.requests_per_minute:
-            # Wait until we can make another request
             wait_time = 60 - (now - self.requests[0]).total_seconds()
             if wait_time > 0:
                 await asyncio.sleep(wait_time)
-
         self.requests.append(now)
 
 # A minimal context for logging used by the content fetcher.
@@ -56,49 +53,36 @@ class WebContentFetcher:
         self.ua = UserAgent()
 
     async def fetch_and_parse(self, url: str, ctx: DummyContext) -> str:
-        """Fetches and parses only the visible text content from the given URL."""
+        """Fetches content from the given URL and extracts the main visible text using Readability."""
         try:
             await self.rate_limiter.acquire()
             await ctx.info(f"Fetching content from: {url}")
 
-            # Generate a random User-Agent for every request
+            # Generate a random User-Agent for every request.
             headers = {
                 "User-Agent": self.ua.random,
                 "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
                 "Accept-Language": "en-US,en;q=0.9",
                 "Accept-Encoding": "gzip, deflate, br",
                 "Connection": "keep-alive",
-                "Referer": "https://www.google.com/",
+                "Referer": "https://pmc.ncbi.nlm.nih.gov/",
             }
 
             async with httpx.AsyncClient() as client:
                 response = await client.get(url, headers=headers, follow_redirects=True, timeout=30.0)
                 response.raise_for_status()
 
-            soup = BeautifulSoup(response.text, "html.parser")
+            # Use Readability to extract the main article content.
+            doc = Document(response.text)
+            # The summary() method returns the HTML of the main content.
+            summary_html = doc.summary()
 
-            # Helper function to filter out text from non-visible elements.
-            def is_visible(element):
-                if element.parent.name in [
-                    "style", "script", "head", "title", "meta",
-                    "[document]", "nav", "header", "footer"
-                ]:
-                    return False
-                if isinstance(element, Comment):
-                    return False
-                return True
-
-            # Get all text nodes and filter out non-visible ones.
-            texts = soup.find_all(string=True)
-            visible_texts = filter(is_visible, texts)
-            text = " ".join(t.strip() for t in visible_texts if t.strip())
+            # Use BeautifulSoup to extract clean text from the summary HTML.
+            soup = BeautifulSoup(summary_html, "html.parser")
+            text = soup.get_text(separator=" ", strip=True)
             text = re.sub(r"\s+", " ", text).strip()
 
-            # Truncate if too long
-            # if len(text) > 8000:
-            #     text = text[:8000] + "... [content truncated]"
-
-            await ctx.info(f"Successfully fetched and parsed content ({len(text)} characters)")
+            await ctx.info(f"Successfully fetched and parsed main content ({len(text)} characters)")
             return text
 
         except httpx.TimeoutException:
@@ -109,7 +93,7 @@ class WebContentFetcher:
             return f"Error: Could not access the webpage ({str(e)})"
         except Exception as e:
             await ctx.error(f"Error fetching content from {url}: {str(e)}")
-            traceback.print_exc(file=sys.stderr)
+            traceback.print_exc()
             return f"Error: An unexpected error occurred while fetching the webpage ({str(e)})"
 
 # Create an instance of WebContentFetcher for use in the tool handler.
