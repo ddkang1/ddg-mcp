@@ -9,7 +9,9 @@ dependencies = [
  "mcp>=1.3.0",
  "beautifulsoup4",
  "fake-useragent",
- "readability‑lxml",
+ "lxml",
+ "lxml_html_clean",
+ "lxml_html_clean",
 ]
 [[project.authors]]
 name = "Shannon Sands"
