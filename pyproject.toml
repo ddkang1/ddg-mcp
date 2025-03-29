@@ -10,7 +10,7 @@ dependencies = [
  "beautifulsoup4",
  "fake-useragent",
  "readability‑lxml",
- "lxml-html-clean",
+ "lxml_html_clean",
 ]
 [[project.authors]]
 name = "Shannon Sands"
