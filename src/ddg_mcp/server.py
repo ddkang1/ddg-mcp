@@ -70,6 +70,7 @@ class WebContentFetcher:
 
             async with httpx.AsyncClient() as client:
                 response = await client.get(url, headers=headers, follow_redirects=True, timeout=30.0)
+                response.encoding = 'utf-8'
                 response.raise_for_status()
 
             # Use Readability to extract the main article content.
@@ -79,6 +80,8 @@ class WebContentFetcher:
 
             # Use BeautifulSoup to extract clean text from the summary HTML.
             soup = BeautifulSoup(summary_html, "html.parser")
+            for tag in soup.find_all(["video", "source", "iframe", "embed"]):
+                tag.decompose()
             text = soup.get_text(separator=" ", strip=True)
             text = re.sub(r"\s+", " ", text).strip()
 
