@@ -6,7 +6,7 @@ import urllib.parse
 from datetime import datetime, timedelta
 
 import httpx
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, Comment
 from fake_useragent import UserAgent
 
 from mcp.server.models import InitializationOptions
@@ -69,7 +69,7 @@ class WebContentFetcher:
                 "Accept-Language": "en-US,en;q=0.9",
                 "Accept-Encoding": "gzip, deflate, br",
                 "Connection": "keep-alive",
-                "Referer": "https://pmc.ncbi.nlm.nih.gov/",
+                "Referer": "https://www.google.com/",
             }
 
             async with httpx.AsyncClient() as client:
@@ -83,9 +83,9 @@ class WebContentFetcher:
 
             soup = BeautifulSoup(response.text, "html.parser")
 
-            # Define a helper function to filter out non-visible elements.
+            # Helper function to filter out text from non-visible elements.
             def is_visible(element):
-                # Exclude tags from which we don't need any text.
+                # Exclude text from these parent tags.
                 if element.parent.name in [
                     'style',
                     'script',
@@ -98,12 +98,11 @@ class WebContentFetcher:
                     'footer'
                 ]:
                     return False
-                # Optionally, skip over comments or purely whitespace
-                if isinstance(element, (BeautifulSoup.Comment, )):
+                if isinstance(element, Comment):
                     return False
                 return True
 
-            # Get all text nodes and filter out those that are not visible.
+            # Get all text nodes and filter out non-visible ones.
             texts = soup.find_all(string=True)
             visible_texts = filter(is_visible, texts)
             text = " ".join(t.strip() for t in visible_texts if t.strip())
