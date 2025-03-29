@@ -53,7 +53,6 @@ class DummyContext:
 class WebContentFetcher:
     def __init__(self):
         self.rate_limiter = RateLimiter(requests_per_minute=20)
-        # Initialize fake user agent
         self.ua = UserAgent()
 
     async def fetch_and_parse(self, url: str, ctx: DummyContext) -> str:
@@ -73,29 +72,16 @@ class WebContentFetcher:
             }
 
             async with httpx.AsyncClient() as client:
-                response = await client.get(
-                    url,
-                    headers=headers,
-                    follow_redirects=True,
-                    timeout=30.0,
-                )
+                response = await client.get(url, headers=headers, follow_redirects=True, timeout=30.0)
                 response.raise_for_status()
 
             soup = BeautifulSoup(response.text, "html.parser")
 
             # Helper function to filter out text from non-visible elements.
             def is_visible(element):
-                # Exclude text from these parent tags.
                 if element.parent.name in [
-                    'style',
-                    'script',
-                    'head',
-                    'title',
-                    'meta',
-                    '[document]',
-                    'nav',
-                    'header',
-                    'footer'
+                    "style", "script", "head", "title", "meta",
+                    "[document]", "nav", "header", "footer"
                 ]:
                     return False
                 if isinstance(element, Comment):
