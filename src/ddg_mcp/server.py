@@ -103,79 +103,6 @@ fetcher = WebContentFetcher()
 
 server = Server("ddg-mcp")
 
-
-@server.list_resources()
-async def handle_list_resources() -> list[types.Resource]:
-    """
-    List available resources.
-    Currently, no resources are exposed.
-    """
-    return []
-
-
-@server.list_prompts()
-async def handle_list_prompts() -> list[types.Prompt]:
-    """
-    List available prompts with optional arguments.
-    """
-    return [
-        types.Prompt(
-            name="search-results-summary",
-            description="Creates a summary of search results",
-            arguments=[
-                types.PromptArgument(
-                    name="query",
-                    description="Search query to summarize results for",
-                    required=True,
-                ),
-                types.PromptArgument(
-                    name="style",
-                    description="Style of the summary (brief/detailed)",
-                    required=False,
-                ),
-            ],
-        )
-    ]
-
-
-@server.get_prompt()
-async def handle_get_prompt(
-    name: str, arguments: dict[str, str] | None
-) -> types.GetPromptResult:
-    if name == "search-results-summary":
-        if not arguments or "query" not in arguments:
-            raise ValueError("Missing required 'query' argument")
-
-        query = arguments.get("query")
-        style = arguments.get("style", "brief")
-        detail_prompt = " Give extensive details." if style == "detailed" else ""
-
-        # Perform search and get results from DuckDuckGo
-        ddgs = DDGS()
-        results = ddgs.text(query, max_results=10)
-        results_text = "\n\n".join(
-            [
-                f"Title: {result.get('title', 'No title')}\nURL: {result.get('href', 'No URL')}\nDescription: {result.get('body', 'No description')}"
-                for result in results
-            ]
-        )
-
-        return types.GetPromptResult(
-            description=f"Summarize search results for '{query}'",
-            messages=[
-                types.PromptMessage(
-                    role="user",
-                    content=types.TextContent(
-                        type="text",
-                        text=f"Here are the search results for '{query}'. Please summarize them{detail_prompt}:\n\n{results_text}",
-                    ),
-                )
-            ],
-        )
-    else:
-        raise ValueError(f"Unknown prompt: {name}")
-
-
 @server.list_tools()
 async def handle_list_tools() -> list[types.Tool]:
     """
@@ -316,14 +243,46 @@ async def handle_call_tool(name: str, arguments: dict | None) -> list[
         timelimit = arguments.get("timelimit")
         max_results = arguments.get("max_results", 10)
 
+        # Create a context for logging
+        ctx = DummyContext()
+        
         ddgs = DDGS()
-        results = ddgs.text(
-            keywords=keywords,
-            region=region,
-            safesearch=safesearch,
-            timelimit=timelimit,
-            max_results=max_results,
-        )
+        max_attempts = 5
+        attempt = 0
+        results = None
+
+        while attempt < max_attempts:
+            try:
+                attempt += 1
+                await ctx.info(f"Attempt {attempt} for ddg-text-search with query '{keywords}'")
+                # Run the ddgs.text call in a separate thread so we can await it.
+                results = await asyncio.to_thread(
+                    ddgs.text,
+                    keywords=keywords,
+                    region=region,
+                    safesearch=safesearch,
+                    timelimit=timelimit,
+                    max_results=max_results,
+                )
+                break  # Successful call
+            except Exception as e:
+                error_message = str(e)
+                # Check if error message hints at rate limit (429 or "rate")
+                if "429" in error_message or "rate" in error_message.lower():
+                    # using exponential backoff: 2, 4, 8, ... seconds.
+                    delay = 2 ** attempt
+                    await ctx.info(
+                        f"Rate limit encountered. Retrying in {delay} seconds (attempt {attempt}/{max_attempts})"
+                    )
+                    await asyncio.sleep(delay)
+                else:
+                    await ctx.error(f"Error during ddg-text-search: {error_message}")
+                    raise  # re-raise unexpected exceptions
+
+        if results is None:
+            error_message = "Failed to fetch ddg text search results due to rate limiting after multiple attempts."
+            await ctx.error(error_message)
+            return [types.TextContent(type="text", text=error_message)]
 
         formatted_results = f"Search results for '{keywords}':\n\n"
         for i, result in enumerate(results, 1):
