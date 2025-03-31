@@ -53,12 +53,12 @@ class WebContentFetcher:
         self.ua = UserAgent()
 
     async def fetch_and_parse(self, url: str, ctx: DummyContext) -> str:
-        """Fetches content from the given URL and extracts the main visible text using Readability."""
         try:
+            # Ensure we don't exceed the rate limit.
             await self.rate_limiter.acquire()
             await ctx.info(f"Fetching content from: {url}")
 
-            # Generate a random User-Agent for every request.
+            # Generate headers with a random User-Agent.
             headers = {
                 "User-Agent": self.ua.random,
                 "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
@@ -68,24 +68,35 @@ class WebContentFetcher:
                 "Referer": "https://pmc.ncbi.nlm.nih.gov/",
             }
 
+            # Use httpx.AsyncClient to fetch the webpage asynchronously.
             async with httpx.AsyncClient() as client:
                 response = await client.get(url, headers=headers, follow_redirects=True, timeout=30.0)
-                response.encoding = 'utf-8'
-                response.raise_for_status()
+            response.encoding = "utf-8"
+            response.raise_for_status()
 
-            # Use Readability to extract the main article content.
-            doc = Document(response.text)
-            # The summary() method returns the HTML of the main content.
-            summary_html = doc.summary()
+            # Parse the HTML content using BeautifulSoup.
+            soup = BeautifulSoup(response.text, "html.parser")
 
-            # Use BeautifulSoup to extract clean text from the summary HTML.
-            soup = BeautifulSoup(summary_html, "html.parser")
-            for tag in soup.find_all(["video", "source", "iframe", "embed"]):
-                tag.decompose()
-            text = soup.get_text(separator=" ", strip=True)
+            # Log the page title if available.
+            title = soup.title.get_text(strip=True) if soup.title else "No title found"
+            await ctx.info(f"Page title: {title}")
+
+            # Attempt to extract the main page content using various selectors.
+            content = soup.select("main")
+            if content:
+                text = content[0].get_text(separator=" ", strip=True)
+            else:
+                await ctx.info("Could not find main content using 'main' selector, trying alternatives")
+                content = soup.select("article") or soup.select("div.col-md-9") or soup.select("body")
+                if content:
+                    text = content[0].get_text(separator=" ", strip=True)
+                else:
+                    await ctx.error("Could not find main content with any selector.")
+                    return "Error: Could not find main content in the webpage."
+
+            # Remove extra whitespace from the extracted text.
             text = re.sub(r"\s+", " ", text).strip()
-
-            await ctx.info(f"Successfully fetched and parsed main content ({len(text)} characters)")
+            await ctx.info(f"Successfully fetched and parsed content, length: {len(text)} characters")
             return text
 
         except httpx.TimeoutException:
@@ -96,6 +107,7 @@ class WebContentFetcher:
             return f"Error: Could not access the webpage ({str(e)})"
         except Exception as e:
             await ctx.error(f"Error fetching content from {url}: {str(e)}")
+            import traceback
             traceback.print_exc()
             return f"Error: An unexpected error occurred while fetching the webpage ({str(e)})"
 
