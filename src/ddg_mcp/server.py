@@ -43,6 +43,14 @@ class DummyContext:
         # Simply print to stderr for now
         print(f"[ERROR] {message}", file=sys.stderr)
 
+headers = {
+    "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                   "AppleWebKit/537.36 (KHTML, like Gecko) "
+                   "Chrome/92.0.4515.159 Safari/537.36"),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Accept-Encoding": "gzip, deflate, br",
+}
 
 class WebContentFetcher:
     def __init__(self):
@@ -55,7 +63,7 @@ class WebContentFetcher:
             await ctx.info(f"Fetching content from: {url}")
 
             # Run the blocking requests.get call in a separate thread
-            response = await asyncio.to_thread(requests.get, url)
+            response = await asyncio.to_thread(requests.get, url, headers=headers)
             response.raise_for_status()  # Raise exception for HTTP errors
 
             # Parse the HTML content with BeautifulSoup
