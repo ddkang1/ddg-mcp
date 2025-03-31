@@ -2,33 +2,28 @@ import asyncio
 import sys
 import traceback
 import re
-import requests
-import urllib.parse
 from datetime import datetime, timedelta
 
-import httpx
-from bs4 import BeautifulSoup, Comment
-from fake_useragent import UserAgent
-from readability import Document 
+import requests
+from bs4 import BeautifulSoup
+from duckduckgo_search import DDGS
 
 from mcp.server.models import InitializationOptions
 import mcp.types as types
 from mcp.server import NotificationOptions, Server
-from pydantic import AnyUrl
 import mcp.server.stdio
-from duckduckgo_search import DDGS
+
 
 # ----------------------------
-# Utilities for fetching web content
+# Utilities for Fetching Web Content
 # ----------------------------
 
-# RateLimiter to ensure we don't exceed request limits.
 class RateLimiter:
     def __init__(self, requests_per_minute: int = 30):
         self.requests_per_minute = requests_per_minute
         self.requests = []
 
-    async def acquire(self):
+    async def acquire(self) -> None:
         now = datetime.now()
         # Remove requests older than 1 minute
         self.requests = [req for req in self.requests if now - req < timedelta(minutes=1)]
@@ -38,20 +33,20 @@ class RateLimiter:
                 await asyncio.sleep(wait_time)
         self.requests.append(now)
 
-# A minimal context for logging used by the content fetcher.
+
 class DummyContext:
     async def info(self, message: str) -> None:
-        # For now, simply print to stdout (or integrate with your logging)
+        # Simply print to stdout for now
         print(f"[INFO] {message}")
 
     async def error(self, message: str) -> None:
-        # For now, simply print to stderr (or integrate with your logging)
+        # Simply print to stderr for now
         print(f"[ERROR] {message}", file=sys.stderr)
+
 
 class WebContentFetcher:
     def __init__(self):
         self.rate_limiter = RateLimiter(requests_per_minute=20)
-        self.ua = UserAgent()
 
     async def fetch_and_parse(self, url: str, ctx: DummyContext) -> str:
         try:
@@ -59,24 +54,22 @@ class WebContentFetcher:
             await self.rate_limiter.acquire()
             await ctx.info(f"Fetching content from: {url}")
 
-            # Use asyncio.to_thread to run the blocking requests.get call in a separate thread
+            # Run the blocking requests.get call in a separate thread
             response = await asyncio.to_thread(requests.get, url)
-            response.raise_for_status()  # Raise an exception for HTTP errors
+            response.raise_for_status()  # Raise exception for HTTP errors
 
-            # Parse the HTML content using BeautifulSoup
+            # Parse the HTML content with BeautifulSoup
             soup = BeautifulSoup(response.text, "html.parser")
-
-            # Log the title of the page if available
-            title = soup.title.text.strip() if soup.title and soup.title.text else "No title found"
+            title = soup.title.text.strip() if soup.title and soup.title.text.strip() else "No title found"
             await ctx.info(f"Title: {title}")
 
-            # First attempt: try to extract the main content with the <main> tag
+            # First, try the <main> tag
             content = soup.select("main")
             if content:
                 text = content[0].get_text(separator=" ", strip=True)
             else:
-                await ctx.info("Could not find main content with 'main' selector, trying alternatives")
-                # Fallback options: <article>, <div class="col-md-9">, or <body>
+                await ctx.info("Could not find content with 'main' selector; trying alternatives")
+                # Fall back to other selectors
                 content = soup.select("article") or soup.select("div.col-md-9") or soup.select("body")
                 if content:
                     text = content[0].get_text(separator=" ", strip=True)
@@ -100,7 +93,8 @@ class WebContentFetcher:
             traceback.print_exc()
             return f"Error: An unexpected error occurred while fetching the webpage ({str(e)})"
 
-# Create an instance of WebContentFetcher for use in the tool handler.
+
+# Create an instance of the fetcher
 fetcher = WebContentFetcher()
 
 # ----------------------------
@@ -108,6 +102,7 @@ fetcher = WebContentFetcher()
 # ----------------------------
 
 server = Server("ddg-mcp")
+
 
 @server.list_resources()
 async def handle_list_resources() -> list[types.Resource]:
@@ -117,11 +112,11 @@ async def handle_list_resources() -> list[types.Resource]:
     """
     return []
 
+
 @server.list_prompts()
 async def handle_list_prompts() -> list[types.Prompt]:
     """
-    List available prompts.
-    Each prompt can have optional arguments to customize its behavior.
+    List available prompts with optional arguments.
     """
     return [
         types.Prompt(
@@ -137,37 +132,34 @@ async def handle_list_prompts() -> list[types.Prompt]:
                     name="style",
                     description="Style of the summary (brief/detailed)",
                     required=False,
-                )
+                ),
             ],
         )
     ]
+
 
 @server.get_prompt()
 async def handle_get_prompt(
     name: str, arguments: dict[str, str] | None
 ) -> types.GetPromptResult:
-    """
-    Generate a prompt by combining arguments with server state.
-    """
     if name == "search-results-summary":
         if not arguments or "query" not in arguments:
             raise ValueError("Missing required 'query' argument")
-        
+
         query = arguments.get("query")
         style = arguments.get("style", "brief")
         detail_prompt = " Give extensive details." if style == "detailed" else ""
-        
-        # Perform search and get results
+
+        # Perform search and get results from DuckDuckGo
         ddgs = DDGS()
         results = ddgs.text(query, max_results=10)
-        
-        results_text = "\n\n".join([
-            f"Title: {result.get('title', 'No title')}\n"
-            f"URL: {result.get('href', 'No URL')}\n"
-            f"Description: {result.get('body', 'No description')}"
-            for result in results
-        ])
-        
+        results_text = "\n\n".join(
+            [
+                f"Title: {result.get('title', 'No title')}\nURL: {result.get('href', 'No URL')}\nDescription: {result.get('body', 'No description')}"
+                for result in results
+            ]
+        )
+
         return types.GetPromptResult(
             description=f"Summarize search results for '{query}'",
             messages=[
@@ -183,11 +175,11 @@ async def handle_get_prompt(
     else:
         raise ValueError(f"Unknown prompt: {name}")
 
+
 @server.list_tools()
 async def handle_list_tools() -> list[types.Tool]:
     """
-    List available tools.
-    Each tool specifies its arguments using JSON Schema validation.
+    List available tools with their input schemas.
     """
     return [
         types.Tool(
@@ -197,10 +189,27 @@ async def handle_list_tools() -> list[types.Tool]:
                 "type": "object",
                 "properties": {
                     "keywords": {"type": "string", "description": "Search query keywords"},
-                    "region": {"type": "string", "description": "Region code (e.g., wt-wt, us-en, uk-en)", "default": "wt-wt"},
-                    "safesearch": {"type": "string", "enum": ["on", "moderate", "off"], "description": "Safe search level", "default": "moderate"},
-                    "timelimit": {"type": "string", "enum": ["d", "w", "m", "y"], "description": "Time limit (d=day, w=week, m=month, y=year)"},
-                    "max_results": {"type": "integer", "description": "Maximum number of results to return", "default": 10},
+                    "region": {
+                        "type": "string",
+                        "description": "Region code (e.g., wt-wt, us-en, uk-en)",
+                        "default": "wt-wt",
+                    },
+                    "safesearch": {
+                        "type": "string",
+                        "enum": ["on", "moderate", "off"],
+                        "description": "Safe search level",
+                        "default": "moderate",
+                    },
+                    "timelimit": {
+                        "type": "string",
+                        "enum": ["d", "w", "m", "y"],
+                        "description": "Time limit (d=day, w=week, m=month, y=year)",
+                    },
+                    "max_results": {
+                        "type": "integer",
+                        "description": "Maximum number of results to return",
+                        "default": 10,
+                    },
                 },
                 "required": ["keywords"],
             },
@@ -212,65 +221,71 @@ async def handle_list_tools() -> list[types.Tool]:
                 "type": "object",
                 "properties": {
                     "keywords": {"type": "string", "description": "Search query keywords"},
-                    "region": {"type": "string", "description": "Region code (e.g., wt-wt, us-en, uk-en)", "default": "wt-wt"},
-                    "safesearch": {"type": "string", "enum": ["on", "moderate", "off"], "description": "Safe search level", "default": "moderate"},
-                    "timelimit": {"type": "string", "enum": ["d", "w", "m", "y"], "description": "Time limit (d=day, w=week, m=month, y=year)"},
-                    "size": {"type": "string", "enum": ["Small", "Medium", "Large", "Wallpaper"], "description": "Image size"},
-                    "color": {"type": "string", "enum": ["color", "Monochrome", "Red", "Orange", "Yellow", "Green", "Blue", "Purple", "Pink", "Brown", "Black", "Gray", "Teal", "White"], "description": "Image color"},
-                    "type_image": {"type": "string", "enum": ["photo", "clipart", "gif", "transparent", "line"], "description": "Image type"},
-                    "layout": {"type": "string", "enum": ["Square", "Tall", "Wide"], "description": "Image layout"},
-                    "license_image": {"type": "string", "enum": ["any", "Public", "Share", "ShareCommercially", "Modify", "ModifyCommercially"], "description": "Image license type"},
-                    "max_results": {"type": "integer", "description": "Maximum number of results to return", "default": 10},
+                    "region": {
+                        "type": "string",
+                        "description": "Region code (e.g., wt-wt, us-en, uk-en)",
+                        "default": "wt-wt",
+                    },
+                    "safesearch": {
+                        "type": "string",
+                        "enum": ["on", "moderate", "off"],
+                        "description": "Safe search level",
+                        "default": "moderate",
+                    },
+                    "timelimit": {
+                        "type": "string",
+                        "enum": ["d", "w", "m", "y"],
+                        "description": "Time limit (d=day, w=week, m=month, y=year)",
+                    },
+                    "size": {
+                        "type": "string",
+                        "enum": ["Small", "Medium", "Large", "Wallpaper"],
+                        "description": "Image size",
+                    },
+                    "color": {
+                        "type": "string",
+                        "enum": [
+                            "color",
+                            "Monochrome",
+                            "Red",
+                            "Orange",
+                            "Yellow",
+                            "Green",
+                            "Blue",
+                            "Purple",
+                            "Pink",
+                            "Brown",
+                            "Black",
+                            "Gray",
+                            "Teal",
+                            "White",
+                        ],
+                        "description": "Image color",
+                    },
+                    "type_image": {
+                        "type": "string",
+                        "enum": ["photo", "clipart", "gif", "transparent", "line"],
+                        "description": "Image type",
+                    },
+                    "layout": {
+                        "type": "string",
+                        "enum": ["Square", "Tall", "Wide"],
+                        "description": "Image layout",
+                    },
+                    "license_image": {
+                        "type": "string",
+                        "enum": ["any", "Public", "Share", "ShareCommercially", "Modify", "ModifyCommercially"],
+                        "description": "Image license type",
+                    },
+                    "max_results": {
+                        "type": "integer",
+                        "description": "Maximum number of results to return",
+                        "default": 10,
+                    },
                 },
                 "required": ["keywords"],
             },
         ),
-        types.Tool(
-            name="ddg-news-search",
-            description="Search for news articles using DuckDuckGo",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "keywords": {"type": "string", "description": "Search query keywords"},
-                    "region": {"type": "string", "description": "Region code (e.g., wt-wt, us-en, uk-en)", "default": "wt-wt"},
-                    "safesearch": {"type": "string", "enum": ["on", "moderate", "off"], "description": "Safe search level", "default": "moderate"},
-                    "timelimit": {"type": "string", "enum": ["d", "w", "m"], "description": "Time limit (d=day, w=week, m=month)"},
-                    "max_results": {"type": "integer", "description": "Maximum number of results to return", "default": 10},
-                },
-                "required": ["keywords"],
-            },
-        ),
-        types.Tool(
-            name="ddg-video-search",
-            description="Search for videos using DuckDuckGo",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "keywords": {"type": "string", "description": "Search query keywords"},
-                    "region": {"type": "string", "description": "Region code (e.g., wt-wt, us-en, uk-en)", "default": "wt-wt"},
-                    "safesearch": {"type": "string", "enum": ["on", "moderate", "off"], "description": "Safe search level", "default": "moderate"},
-                    "timelimit": {"type": "string", "enum": ["d", "w", "m"], "description": "Time limit (d=day, w=week, m=month)"},
-                    "resolution": {"type": "string", "enum": ["high", "standard"], "description": "Video resolution"},
-                    "duration": {"type": "string", "enum": ["short", "medium", "long"], "description": "Video duration"},
-                    "license_videos": {"type": "string", "enum": ["creativeCommon", "youtube"], "description": "Video license type"},
-                    "max_results": {"type": "integer", "description": "Maximum number of results to return", "default": 10},
-                },
-                "required": ["keywords"],
-            },
-        ),
-        # types.Tool(
-        #     name="ddg-ai-chat",
-        #     description="Chat with DuckDuckGo AI",
-        #     inputSchema={
-        #         "type": "object",
-        #         "properties": {
-        #             "keywords": {"type": "string", "description": "Message or question to send to the AI"},
-        #             "model": {"type": "string", "enum": ["gpt-4o-mini", "llama-3.3-70b", "claude-3-haiku", "o3-mini", "mistral-small-3"], "description": "AI model to use", "default": "gpt-4o-mini"},
-        #         },
-        #         "required": ["keywords"],
-        #     },
-        # ),
-        # New tool for fetching webpage content
         types.Tool(
             name="ddg-fetch-content",
             description="Fetch and parse content from a webpage URL",
@@ -284,13 +299,11 @@ async def handle_list_tools() -> list[types.Tool]:
         ),
     ]
 
+
 @server.call_tool()
-async def handle_call_tool(
-    name: str, arguments: dict | None
-) -> list[types.TextContent | types.ImageContent | types.EmbeddedResource]:
-    """
-    Handle tool execution requests.
-    """
+async def handle_call_tool(name: str, arguments: dict | None) -> list[
+    types.TextContent | types.ImageContent | types.EmbeddedResource
+]:
     if not arguments:
         raise ValueError("Missing arguments")
 
@@ -298,23 +311,20 @@ async def handle_call_tool(
         keywords = arguments.get("keywords")
         if not keywords:
             raise ValueError("Missing keywords")
-        
         region = arguments.get("region", "wt-wt")
         safesearch = arguments.get("safesearch", "moderate")
         timelimit = arguments.get("timelimit")
         max_results = arguments.get("max_results", 10)
-        
-        # Perform search
+
         ddgs = DDGS()
         results = ddgs.text(
             keywords=keywords,
             region=region,
             safesearch=safesearch,
             timelimit=timelimit,
-            max_results=max_results
+            max_results=max_results,
         )
-        
-        # Format results
+
         formatted_results = f"Search results for '{keywords}':\n\n"
         for i, result in enumerate(results, 1):
             formatted_results += (
@@ -322,19 +332,12 @@ async def handle_call_tool(
                 f"   URL: {result.get('href', 'No URL')}\n"
                 f"   {result.get('body', 'No description')}\n\n"
             )
-        
-        return [
-            types.TextContent(
-                type="text",
-                text=formatted_results,
-            )
-        ]
-    
+        return [types.TextContent(type="text", text=formatted_results)]
+
     elif name == "ddg-image-search":
         keywords = arguments.get("keywords")
         if not keywords:
             raise ValueError("Missing keywords")
-        
         region = arguments.get("region", "wt-wt")
         safesearch = arguments.get("safesearch", "moderate")
         timelimit = arguments.get("timelimit")
@@ -344,8 +347,7 @@ async def handle_call_tool(
         layout = arguments.get("layout")
         license_image = arguments.get("license_image")
         max_results = arguments.get("max_results", 10)
-        
-        # Perform search
+
         ddgs = DDGS()
         results = ddgs.images(
             keywords=keywords,
@@ -357,7 +359,7 @@ async def handle_call_tool(
             type_image=type_image,
             layout=layout,
             license_image=license_image,
-            max_results=max_results
+            max_results=max_results,
         )
 
         # Helper to guess mime type based on file extension
@@ -369,169 +371,56 @@ async def handle_call_tool(
                 return "image/gif"
             elif lower_url.endswith(".svg"):
                 return "image/svg+xml"
-            # Default to jpeg if uncertain
             return "image/jpeg"
 
-        # Format results
-        formatted_results = f"Image search results for '{keywords}':\n\n"
-        
         text_results = []
         image_results = []
-        
         for i, result in enumerate(results, 1):
             text_results.append(
                 types.TextContent(
                     type="text",
-                    text=f"{i}. {result.get('title', 'No title')}\n"
-                         f"   Source: {result.get('source', 'Unknown')}\n"
-                         f"   URL: {result.get('url', 'No URL')}\n"
-                         f"   Size: {result.get('width', 'N/A')}x{result.get('height', 'N/A')}\n"
+                    text=(
+                        f"{i}. {result.get('title', 'No title')}\n"
+                        f"   Source: {result.get('source', 'Unknown')}\n"
+                        f"   URL: {result.get('url', 'No URL')}\n"
+                        f"   Size: {result.get('width', 'N/A')}x{result.get('height', 'N/A')}\n"
+                    ),
                 )
             )
-            
-            image_url = result.get('image')
+            image_url = result.get("image")
             if image_url:
                 mime_type = guess_mime_type(image_url)
                 image_results.append(
                     types.ImageContent(
                         type="image",
-                        data=image_url,             # Instead of "url", use "data"
-                        mimeType=mime_type,         # Provide the mimeType field
-                        alt_text=result.get('title', 'Image search result')
+                        data=image_url,
+                        mimeType=mime_type,
+                        alt_text=result.get("title", "Image search result"),
                     )
                 )
-        
-        # Interleave text and image results
+
         combined_results = []
+        # Interleave text and image results
         for text, image in zip(text_results, image_results):
             combined_results.extend([text, image])
-        
         return combined_results
-    
-    elif name == "ddg-news-search":
-        keywords = arguments.get("keywords")
-        if not keywords:
-            raise ValueError("Missing keywords")
-        
-        region = arguments.get("region", "wt-wt")
-        safesearch = arguments.get("safesearch", "moderate")
-        timelimit = arguments.get("timelimit")
-        max_results = arguments.get("max_results", 10)
-        
-        # Perform search
-        ddgs = DDGS()
-        results = ddgs.news(
-            keywords=keywords,
-            region=region,
-            safesearch=safesearch,
-            timelimit=timelimit,
-            max_results=max_results
-        )
-        
-        # Format results
-        formatted_results = f"News search results for '{keywords}':\n\n"
-        for i, result in enumerate(results, 1):
-            formatted_results += (
-                f"{i}. {result.get('title', 'No title')}\n"
-                f"   Source: {result.get('source', 'Unknown')}\n"
-                f"   Date: {result.get('date', 'No date')}\n"
-                f"   URL: {result.get('url', 'No URL')}\n"
-                f"   {result.get('body', 'No description')}\n\n"
-            )
-        
-        return [
-            types.TextContent(
-                type="text",
-                text=formatted_results,
-            )
-        ]
-    
-    elif name == "ddg-video-search":
-        keywords = arguments.get("keywords")
-        if not keywords:
-            raise ValueError("Missing keywords")
-        
-        region = arguments.get("region", "wt-wt")
-        safesearch = arguments.get("safesearch", "moderate")
-        timelimit = arguments.get("timelimit")
-        resolution = arguments.get("resolution")
-        duration = arguments.get("duration")
-        license_videos = arguments.get("license_videos")
-        max_results = arguments.get("max_results", 10)
-        
-        # Perform search
-        ddgs = DDGS()
-        results = ddgs.videos(
-            keywords=keywords,
-            region=region,
-            safesearch=safesearch,
-            timelimit=timelimit,
-            resolution=resolution,
-            duration=duration,
-            license_videos=license_videos,
-            max_results=max_results
-        )
-        
-        # Format results
-        formatted_results = f"Video search results for '{keywords}':\n\n"
-        for i, result in enumerate(results, 1):
-            formatted_results += (
-                f"{i}. {result.get('title', 'No title')}\n"
-                f"   Publisher: {result.get('publisher', 'Unknown')}\n"
-                f"   Duration: {result.get('duration', 'Unknown')}\n"
-                f"   URL: {result.get('content', 'No URL')}\n"
-                f"   Published: {result.get('published', 'No date')}\n"
-                f"   {result.get('description', 'No description')}\n\n"
-            )
-        
-        return [
-            types.TextContent(
-                type="text",
-                text=formatted_results,
-            )
-        ]
-    
-    # elif name == "ddg-ai-chat":
-    #     keywords = arguments.get("keywords")
-    #     if not keywords:
-    #         raise ValueError("Missing keywords")
-        
-    #     model = arguments.get("model", "gpt-4o-mini")
-        
-    #     # Perform AI chat
-    #     ddgs = DDGS()
-    #     result = ddgs.chat(
-    #         keywords=keywords,
-    #         model=model
-    #     )
-        
-    #     return [
-    #         types.TextContent(
-    #             type="text",
-    #             text=f"DuckDuckGo AI ({model}) response:\n\n{result}",
-    #         )
-    #     ]
 
     elif name == "ddg-fetch-content":
         url = arguments.get("url")
         if not url:
             raise ValueError("Missing url")
-        
-        # Create a dummy context to enable logging in the fetcher.
         ctx = DummyContext()
         content = await fetcher.fetch_and_parse(url, ctx)
         return [
             types.TextContent(
-                type="text",
-                text=f"Fetched content from '{url}':\n\n{content}",
+                type="text", text=f"Fetched content from '{url}':\n\n{content}"
             )
         ]
-
     else:
         raise ValueError(f"Unknown tool: {name}")
 
+
 async def main():
-    # Run the server using stdin/stdout streams
     async with mcp.server.stdio.stdio_server() as (read_stream, write_stream):
         await server.run(
             read_stream,
@@ -540,8 +429,11 @@ async def main():
                 server_name="ddg-mcp",
                 server_version="0.1.0",
                 capabilities=server.get_capabilities(
-                    notification_options=NotificationOptions(),
-                    experimental_capabilities={},
+                    notification_options=NotificationOptions(), experimental_capabilities={}
                 ),
             ),
         )
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
