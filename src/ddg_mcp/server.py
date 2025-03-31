@@ -2,6 +2,7 @@ import asyncio
 import sys
 import traceback
 import re
+import requests
 import urllib.parse
 from datetime import datetime, timedelta
 
@@ -54,60 +55,48 @@ class WebContentFetcher:
 
     async def fetch_and_parse(self, url: str, ctx: DummyContext) -> str:
         try:
-            # Ensure we don't exceed the rate limit.
+            # Respect rate limiting
             await self.rate_limiter.acquire()
             await ctx.info(f"Fetching content from: {url}")
 
-            # Generate headers with a random User-Agent.
-            headers = {
-                "User-Agent": self.ua.random,
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-                "Accept-Language": "en-US,en;q=0.9",
-                "Accept-Encoding": "gzip, deflate, br",
-                "Connection": "keep-alive",
-                "Referer": "https://pmc.ncbi.nlm.nih.gov/",
-            }
+            # Use asyncio.to_thread to run the blocking requests.get call in a separate thread
+            response = await asyncio.to_thread(requests.get, url)
+            response.raise_for_status()  # Raise an exception for HTTP errors
 
-            # Use httpx.AsyncClient to fetch the webpage asynchronously.
-            async with httpx.AsyncClient() as client:
-                response = await client.get(url, headers=headers, follow_redirects=True, timeout=30.0)
-            response.encoding = "utf-8"
-            response.raise_for_status()
-
-            # Parse the HTML content using BeautifulSoup.
+            # Parse the HTML content using BeautifulSoup
             soup = BeautifulSoup(response.text, "html.parser")
 
-            # Log the page title if available.
-            title = soup.title.get_text(strip=True) if soup.title else "No title found"
-            await ctx.info(f"Page title: {title}")
+            # Log the title of the page if available
+            title = soup.title.text.strip() if soup.title and soup.title.text else "No title found"
+            await ctx.info(f"Title: {title}")
 
-            # Attempt to extract the main page content using various selectors.
+            # First attempt: try to extract the main content with the <main> tag
             content = soup.select("main")
             if content:
                 text = content[0].get_text(separator=" ", strip=True)
             else:
-                await ctx.info("Could not find main content using 'main' selector, trying alternatives")
+                await ctx.info("Could not find main content with 'main' selector, trying alternatives")
+                # Fallback options: <article>, <div class="col-md-9">, or <body>
                 content = soup.select("article") or soup.select("div.col-md-9") or soup.select("body")
                 if content:
                     text = content[0].get_text(separator=" ", strip=True)
                 else:
-                    await ctx.error("Could not find main content with any selector.")
+                    await ctx.error("Could not find main content using any selector.")
                     return "Error: Could not find main content in the webpage."
 
-            # Remove extra whitespace from the extracted text.
+            # Clean up the text by removing extra whitespace
             text = re.sub(r"\s+", " ", text).strip()
-            await ctx.info(f"Successfully fetched and parsed content, length: {len(text)} characters")
+            await ctx.info(f"Successfully fetched content with length: {len(text)} characters")
             return text
 
-        except httpx.TimeoutException:
+        except requests.Timeout:
             await ctx.error(f"Request timed out for URL: {url}")
             return "Error: The request timed out while trying to fetch the webpage."
-        except httpx.HTTPError as e:
+        except requests.HTTPError as e:
             await ctx.error(f"HTTP error occurred while fetching {url}: {str(e)}")
             return f"Error: Could not access the webpage ({str(e)})"
         except Exception as e:
             await ctx.error(f"Error fetching content from {url}: {str(e)}")
-            import traceback
             traceback.print_exc()
             return f"Error: An unexpected error occurred while fetching the webpage ({str(e)})"
 

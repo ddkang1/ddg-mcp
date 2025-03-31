@@ -12,6 +12,7 @@ dependencies = [
   "lxml",
   "lxml-html-clean",
   "readability-lxml",
+  "requests",
 ]
 
 [[project.authors]]
