@@ -268,16 +268,17 @@ async def handle_call_tool(name: str, arguments: dict | None) -> list[
             except Exception as e:
                 error_message = str(e)
                 # Check if error message hints at rate limit (429 or "rate")
-                if "429" in error_message or "rate" in error_message.lower():
+                # if "429" in error_message or "rate" in error_message.lower():
                     # using exponential backoff: 2, 4, 8, ... seconds.
-                    delay = 2 ** attempt
-                    await ctx.info(
-                        f"Rate limit encountered. Retrying in {delay} seconds (attempt {attempt}/{max_attempts})"
-                    )
-                    await asyncio.sleep(delay)
-                else:
-                    await ctx.error(f"Error during ddg-text-search: {error_message}")
-                    raise  # re-raise unexpected exceptions
+                delay = 2 ** attempt
+                await ctx.error(f"Error during ddg-text-search: {error_message}")
+                await ctx.info(
+                    f"Retrying in {delay} seconds (attempt {attempt}/{max_attempts})"
+                )
+                await asyncio.sleep(delay)
+                # else:
+                #     await ctx.error(f"Error during ddg-text-search: {error_message}")
+                #     raise  # re-raise unexpected exceptions
 
         if results is None:
             error_message = "Failed to fetch ddg text search results due to rate limiting after multiple attempts."
