@@ -3,7 +3,7 @@ name = "ddg-mcp"
 version = "0.1.1"
 description = "DuckDuckGo search API MCP"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.10"
 dependencies = [
   "duckduckgo-search",
   "mcp",

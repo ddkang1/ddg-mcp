@@ -1,17 +1,28 @@
+#!/usr/bin/env python3
+"""MCP server implementation for DuckDuckGo search and web content fetching."""
+
 import asyncio
 import sys
 import traceback
 import re
+import argparse
+import datetime
 from datetime import datetime, timedelta
+from typing import Any, List, Dict, Optional, Union
 
 import requests
 from bs4 import BeautifulSoup
 from duckduckgo_search import DDGS
+from pydantic import Field
 
-from mcp.server.models import InitializationOptions
+from mcp.server.fastmcp import FastMCP
+from starlette.applications import Starlette
+from mcp.server.sse import SseServerTransport
+from starlette.requests import Request
+from starlette.routing import Mount, Route
+import uvicorn
 import mcp.types as types
-from mcp.server import NotificationOptions, Server
-import mcp.server.stdio
+from mcp.server import NotificationOptions
 
 
 # ----------------------------
@@ -19,11 +30,19 @@ import mcp.server.stdio
 # ----------------------------
 
 class RateLimiter:
+    """Rate limiter to prevent too many requests in a short period."""
+    
     def __init__(self, requests_per_minute: int = 30):
+        """Initialize the rate limiter.
+        
+        Args:
+            requests_per_minute: Maximum number of requests allowed per minute
+        """
         self.requests_per_minute = requests_per_minute
         self.requests = []
 
     async def acquire(self) -> None:
+        """Acquire permission to make a request, waiting if necessary."""
         now = datetime.now()
         # Remove requests older than 1 minute
         self.requests = [req for req in self.requests if now - req < timedelta(minutes=1)]
@@ -35,13 +54,26 @@ class RateLimiter:
 
 
 class DummyContext:
+    """Simple context for logging messages."""
+    
     async def info(self, message: str) -> None:
+        """Log an info message.
+        
+        Args:
+            message: The message to log
+        """
         # Simply print to stdout for now
         print(f"[INFO] {message}")
 
     async def error(self, message: str) -> None:
+        """Log an error message.
+        
+        Args:
+            message: The error message to log
+        """
         # Simply print to stderr for now
         print(f"[ERROR] {message}", file=sys.stderr)
+
 
 headers = {
     "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -52,11 +84,24 @@ headers = {
     "Accept-Encoding": "gzip, deflate, br",
 }
 
+
 class WebContentFetcher:
+    """Utility class for fetching and parsing web content."""
+    
     def __init__(self):
+        """Initialize the web content fetcher with rate limiting."""
         self.rate_limiter = RateLimiter(requests_per_minute=20)
 
     async def fetch_and_parse(self, url: str, ctx: DummyContext) -> str:
+        """Fetch and parse content from a URL.
+        
+        Args:
+            url: The URL to fetch content from
+            ctx: Context for logging
+            
+        Returns:
+            The parsed text content from the webpage
+        """
         try:
             # Respect rate limiting
             await self.rate_limiter.acquire()
@@ -109,298 +154,298 @@ fetcher = WebContentFetcher()
 # MCP Server and Tool Implementations
 # ----------------------------
 
-server = Server("ddg-mcp")
+# Initialize FastMCP server
+mcp = FastMCP("ddg-mcp")
 
-@server.list_tools()
-async def handle_list_tools() -> list[types.Tool]:
+
+@mcp.tool()
+async def ddg_text_search(
+    keywords: str = Field(description="Search query keywords"),
+    region: str = Field(description="Region code (e.g., wt-wt, us-en, uk-en)", default="wt-wt"),
+    safesearch: str = Field(description="Safe search level (on, moderate, off)", default="moderate"),
+    timelimit: Optional[str] = Field(description="Time limit (d=day, w=week, m=month, y=year)", default=None),
+    max_results: int = Field(description="Maximum number of results to return", default=10)
+) -> List[types.TextContent]:
+    """Search the web for text results using DuckDuckGo.
+    
+    IMPORTANT: This tool should only be used as a last resort when no other tools are available
+    or their results are not sufficient for the task. Prefer using other available tools first.
+    
+    Args:
+        keywords: Search query keywords
+        region: Region code (e.g., wt-wt, us-en, uk-en)
+        safesearch: Safe search level (on, moderate, off)
+        timelimit: Time limit (d=day, w=week, m=month, y=year)
+        max_results: Maximum number of results to return
+        
+    Returns:
+        List of text content with search results
+    
+    Args:
+        keywords: Search query keywords
+        region: Region code (e.g., wt-wt, us-en, uk-en)
+        safesearch: Safe search level (on, moderate, off)
+        timelimit: Time limit (d=day, w=week, m=month, y=year)
+        max_results: Maximum number of results to return
+        
+    Returns:
+        List of text content with search results
     """
-    List available tools with their input schemas.
+    # Create a context for logging
+    ctx = DummyContext()
+    
+    ddgs = DDGS()
+    max_attempts = 5
+    attempt = 0
+    results = None
+
+    while attempt < max_attempts:
+        try:
+            attempt += 1
+            await ctx.info(f"Attempt {attempt} for ddg-text-search with query '{keywords}'")
+            # Run the ddgs.text call in a separate thread so we can await it.
+            results = await asyncio.to_thread(
+                ddgs.text,
+                keywords=keywords,
+                region=region,
+                safesearch=safesearch,
+                timelimit=timelimit,
+                max_results=max_results,
+            )
+            break  # Successful call
+        except Exception as e:
+            error_message = str(e)
+            # Using exponential backoff: 2, 4, 8, ... seconds.
+            delay = 4 ** attempt
+            await ctx.error(
+                f"Retrying in {delay} seconds (attempt {attempt}/{max_attempts})"
+            )
+            await asyncio.sleep(delay)
+
+    if results is None:
+        error_message = "Failed to fetch ddg text search results due to rate limiting after multiple attempts."
+        await ctx.error(error_message)
+        return [types.TextContent(type="text", text=error_message)]
+
+    formatted_results = f"Search results for '{keywords}':\n\n"
+    for i, result in enumerate(results, 1):
+        formatted_results += (
+            f"{i}. {result.get('title', 'No title')}\n"
+            f"   URL: {result.get('href', 'No URL')}\n"
+            f"   {result.get('body', 'No description')}\n\n"
+        )
+    return [types.TextContent(type="text", text=formatted_results)]
+
+
+@mcp.tool()
+async def ddg_image_search(
+    keywords: str = Field(description="Search query keywords"),
+    region: str = Field(description="Region code (e.g., wt-wt, us-en, uk-en)", default="wt-wt"),
+    safesearch: str = Field(description="Safe search level (on, moderate, off)", default="moderate"),
+    timelimit: Optional[str] = Field(description="Time limit (d=day, w=week, m=month, y=year)", default=None),
+    size: Optional[str] = Field(description="Image size (Small, Medium, Large, Wallpaper)", default=None),
+    color: Optional[str] = Field(description="Image color", default=None),
+    type_image: Optional[str] = Field(description="Image type (photo, clipart, gif, transparent, line)", default=None),
+    layout: Optional[str] = Field(description="Image layout (Square, Tall, Wide)", default=None),
+    license_image: Optional[str] = Field(description="Image license type", default=None),
+    max_results: int = Field(description="Maximum number of results to return", default=10)
+) -> List[Union[types.TextContent, types.ImageContent]]:
+    """Search the web for images using DuckDuckGo.
+    
+    IMPORTANT: This tool should only be used as a last resort when no other tools are available
+    or their results are not sufficient for the task. Prefer using other available tools first.
+    
+    Args:
+        keywords: Search query keywords
+        region: Region code (e.g., wt-wt, us-en, uk-en)
+        safesearch: Safe search level (on, moderate, off)
+        timelimit: Time limit (d=day, w=week, m=month, y=year)
+        size: Image size
+        color: Image color
+        type_image: Image type
+        layout: Image layout
+        license_image: Image license type
+        max_results: Maximum number of results to return
+        
+    Returns:
+        List of text and image content with search results
+    
+    Args:
+        keywords: Search query keywords
+        region: Region code (e.g., wt-wt, us-en, uk-en)
+        safesearch: Safe search level (on, moderate, off)
+        timelimit: Time limit (d=day, w=week, m=month, y=year)
+        size: Image size
+        color: Image color
+        type_image: Image type
+        layout: Image layout
+        license_image: Image license type
+        max_results: Maximum number of results to return
+        
+    Returns:
+        List of text and image content with search results
     """
+    # Create a context for logging
+    ctx = DummyContext()
+    
+    ddgs = DDGS()
+    
+    # Run the ddgs.images call in a separate thread so we can await it
+    results = await asyncio.to_thread(
+        ddgs.images,
+        keywords=keywords,
+        region=region,
+        safesearch=safesearch,
+        timelimit=timelimit,
+        size=size,
+        color=color,
+        type_image=type_image,
+        layout=layout,
+        license_image=license_image,
+        max_results=max_results,
+    )
+
+    # Helper to guess mime type based on file extension
+    def guess_mime_type(url: str) -> str:
+        lower_url = url.lower()
+        if lower_url.endswith(".png"):
+            return "image/png"
+        elif lower_url.endswith(".gif"):
+            return "image/gif"
+        elif lower_url.endswith(".svg"):
+            return "image/svg+xml"
+        return "image/jpeg"
+
+    text_results = []
+    image_results = []
+    for i, result in enumerate(results, 1):
+        text_results.append(
+            types.TextContent(
+                type="text",
+                text=(
+                    f"{i}. {result.get('title', 'No title')}\n"
+                    f"   Source: {result.get('source', 'Unknown')}\n"
+                    f"   URL: {result.get('url', 'No URL')}\n"
+                    f"   Size: {result.get('width', 'N/A')}x{result.get('height', 'N/A')}\n"
+                ),
+            )
+        )
+        image_url = result.get("image")
+        if image_url:
+            mime_type = guess_mime_type(image_url)
+            image_results.append(
+                types.ImageContent(
+                    type="image",
+                    data=image_url,
+                    mimeType=mime_type,
+                    alt_text=result.get("title", "Image search result"),
+                )
+            )
+
+    combined_results = []
+    # Interleave text and image results
+    for text, image in zip(text_results, image_results):
+        combined_results.extend([text, image])
+    return combined_results
+
+
+@mcp.tool()
+async def ddg_fetch_content(
+    url: str = Field(description="The webpage URL to fetch content from")
+) -> List[types.TextContent]:
+    """Fetch and parse content from a webpage URL.
+    
+    IMPORTANT: This tool should only be used as a last resort when no other tools are available
+    or their results are not sufficient for the task. Prefer using other available tools first.
+    
+    Args:
+        url: The webpage URL to fetch content from
+        
+    Returns:
+        List of text content with the fetched webpage content
+    
+    Args:
+        url: The webpage URL to fetch content from
+        
+    Returns:
+        List of text content with the fetched webpage content
+    """
+    ctx = DummyContext()
+    content = await fetcher.fetch_and_parse(url, ctx)
     return [
-        types.Tool(
-            name="ddg-text-search",
-            description="Search the web for text results using DuckDuckGo",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "keywords": {"type": "string", "description": "Search query keywords"},
-                    "region": {
-                        "type": "string",
-                        "description": "Region code (e.g., wt-wt, us-en, uk-en)",
-                        "default": "wt-wt",
-                    },
-                    "safesearch": {
-                        "type": "string",
-                        "enum": ["on", "moderate", "off"],
-                        "description": "Safe search level",
-                        "default": "moderate",
-                    },
-                    "timelimit": {
-                        "type": "string",
-                        "enum": ["d", "w", "m", "y"],
-                        "description": "Time limit (d=day, w=week, m=month, y=year)",
-                    },
-                    "max_results": {
-                        "type": "integer",
-                        "description": "Maximum number of results to return",
-                        "default": 10,
-                    },
-                },
-                "required": ["keywords"],
-            },
-        ),
-        types.Tool(
-            name="ddg-image-search",
-            description="Search the web for images using DuckDuckGo",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "keywords": {"type": "string", "description": "Search query keywords"},
-                    "region": {
-                        "type": "string",
-                        "description": "Region code (e.g., wt-wt, us-en, uk-en)",
-                        "default": "wt-wt",
-                    },
-                    "safesearch": {
-                        "type": "string",
-                        "enum": ["on", "moderate", "off"],
-                        "description": "Safe search level",
-                        "default": "moderate",
-                    },
-                    "timelimit": {
-                        "type": "string",
-                        "enum": ["d", "w", "m", "y"],
-                        "description": "Time limit (d=day, w=week, m=month, y=year)",
-                    },
-                    "size": {
-                        "type": "string",
-                        "enum": ["Small", "Medium", "Large", "Wallpaper"],
-                        "description": "Image size",
-                    },
-                    "color": {
-                        "type": "string",
-                        "enum": [
-                            "color",
-                            "Monochrome",
-                            "Red",
-                            "Orange",
-                            "Yellow",
-                            "Green",
-                            "Blue",
-                            "Purple",
-                            "Pink",
-                            "Brown",
-                            "Black",
-                            "Gray",
-                            "Teal",
-                            "White",
-                        ],
-                        "description": "Image color",
-                    },
-                    "type_image": {
-                        "type": "string",
-                        "enum": ["photo", "clipart", "gif", "transparent", "line"],
-                        "description": "Image type",
-                    },
-                    "layout": {
-                        "type": "string",
-                        "enum": ["Square", "Tall", "Wide"],
-                        "description": "Image layout",
-                    },
-                    "license_image": {
-                        "type": "string",
-                        "enum": ["any", "Public", "Share", "ShareCommercially", "Modify", "ModifyCommercially"],
-                        "description": "Image license type",
-                    },
-                    "max_results": {
-                        "type": "integer",
-                        "description": "Maximum number of results to return",
-                        "default": 10,
-                    },
-                },
-                "required": ["keywords"],
-            },
-        ),
-        types.Tool(
-            name="ddg-fetch-content",
-            description="Fetch and parse content from a webpage URL",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "url": {"type": "string", "description": "The webpage URL to fetch content from"},
-                },
-                "required": ["url"],
-            },
-        ),
+        types.TextContent(
+            type="text", text=f"Fetched content from '{url}':\n\n{content}"
+        )
     ]
 
 
-@server.call_tool()
-async def handle_call_tool(name: str, arguments: dict | None) -> list[
-    types.TextContent | types.ImageContent | types.EmbeddedResource
-]:
-    if not arguments:
-        raise ValueError("Missing arguments")
-
-    if name == "ddg-text-search":
-        keywords = arguments.get("keywords")
-        if not keywords:
-            raise ValueError("Missing keywords")
-        region = arguments.get("region", "wt-wt")
-        safesearch = arguments.get("safesearch", "moderate")
-        timelimit = arguments.get("timelimit")
-        max_results = arguments.get("max_results", 10)
-
-        # Create a context for logging
-        ctx = DummyContext()
+def create_starlette_app(mcp_server, *, debug: bool = False) -> Starlette:
+    """Create a Starlette application for SSE transport.
+    
+    Args:
+        mcp_server: The MCP server instance
+        debug: Whether to enable debug mode
         
-        ddgs = DDGS()
-        max_attempts = 5
-        attempt = 0
-        results = None
+    Returns:
+        A Starlette application
+    """
+    sse = SseServerTransport("/messages/")
 
-        while attempt < max_attempts:
-            try:
-                attempt += 1
-                await ctx.info(f"Attempt {attempt} for ddg-text-search with query '{keywords}'")
-                # Run the ddgs.text call in a separate thread so we can await it.
-                results = await asyncio.to_thread(
-                    ddgs.text,
-                    keywords=keywords,
-                    region=region,
-                    safesearch=safesearch,
-                    timelimit=timelimit,
-                    max_results=max_results,
-                )
-                break  # Successful call
-            except Exception as e:
-                error_message = str(e)
-                # Check if error message hints at rate limit (429 or "rate")
-                # if "429" in error_message or "rate" in error_message.lower():
-                    # using exponential backoff: 2, 4, 8, ... seconds.
-                delay = 2 ** attempt
-                await ctx.error(f"Error during ddg-text-search: {error_message}")
-                await ctx.info(
-                    f"Retrying in {delay} seconds (attempt {attempt}/{max_attempts})"
-                )
-                await asyncio.sleep(delay)
-                # else:
-                #     await ctx.error(f"Error during ddg-text-search: {error_message}")
-                #     raise  # re-raise unexpected exceptions
-
-        if results is None:
-            error_message = "Failed to fetch ddg text search results due to rate limiting after multiple attempts."
-            await ctx.error(error_message)
-            return [types.TextContent(type="text", text=error_message)]
-
-        formatted_results = f"Search results for '{keywords}':\n\n"
-        for i, result in enumerate(results, 1):
-            formatted_results += (
-                f"{i}. {result.get('title', 'No title')}\n"
-                f"   URL: {result.get('href', 'No URL')}\n"
-                f"   {result.get('body', 'No description')}\n\n"
+    async def handle_sse(request: Request) -> None:
+        async with sse.connect_sse(
+            request.scope,
+            request.receive,
+            request._send,
+        ) as (read_stream, write_stream):
+            await mcp_server.run(
+                read_stream,
+                write_stream,
+                mcp_server.create_initialization_options(),
             )
-        return [types.TextContent(type="text", text=formatted_results)]
 
-    elif name == "ddg-image-search":
-        keywords = arguments.get("keywords")
-        if not keywords:
-            raise ValueError("Missing keywords")
-        region = arguments.get("region", "wt-wt")
-        safesearch = arguments.get("safesearch", "moderate")
-        timelimit = arguments.get("timelimit")
-        size = arguments.get("size")
-        color = arguments.get("color")
-        type_image = arguments.get("type_image")
-        layout = arguments.get("layout")
-        license_image = arguments.get("license_image")
-        max_results = arguments.get("max_results", 10)
+    return Starlette(
+        debug=debug,
+        routes=[
+            Route("/sse", endpoint=handle_sse),
+            Mount("/messages/", app=sse.handle_post_message),
+        ],
+    )
 
-        ddgs = DDGS()
-        results = ddgs.images(
-            keywords=keywords,
-            region=region,
-            safesearch=safesearch,
-            timelimit=timelimit,
-            size=size,
-            color=color,
-            type_image=type_image,
-            layout=layout,
-            license_image=license_image,
-            max_results=max_results,
+
+def main():
+    """Main entry point for the DuckDuckGo MCP server."""
+    mcp_server = mcp._mcp_server
+
+    parser = argparse.ArgumentParser(description="Run DuckDuckGo MCP server")
+
+    parser.add_argument(
+        "--sse",
+        action="store_true",
+        help="Run the server with SSE transport rather than STDIO (default: False)",
+    )
+    parser.add_argument(
+        "--host", default=None, help="Host to bind to (default: 127.0.0.1)"
+    )
+    parser.add_argument(
+        "--port", type=int, default=None, help="Port to listen on (default: 8000)"
+    )
+    args = parser.parse_args()
+
+    if not args.sse and (args.host or args.port):
+        parser.error("Host and port arguments are only valid when using SSE transport.")
+        sys.exit(1)
+
+    print(f"Starting DuckDuckGo MCP Server...")
+    
+    if args.sse:
+        starlette_app = create_starlette_app(mcp_server, debug=True)
+        uvicorn.run(
+            starlette_app,
+            host=args.host if args.host else "127.0.0.1",
+            port=args.port if args.port else 8000,
         )
-
-        # Helper to guess mime type based on file extension
-        def guess_mime_type(url: str) -> str:
-            lower_url = url.lower()
-            if lower_url.endswith(".png"):
-                return "image/png"
-            elif lower_url.endswith(".gif"):
-                return "image/gif"
-            elif lower_url.endswith(".svg"):
-                return "image/svg+xml"
-            return "image/jpeg"
-
-        text_results = []
-        image_results = []
-        for i, result in enumerate(results, 1):
-            text_results.append(
-                types.TextContent(
-                    type="text",
-                    text=(
-                        f"{i}. {result.get('title', 'No title')}\n"
-                        f"   Source: {result.get('source', 'Unknown')}\n"
-                        f"   URL: {result.get('url', 'No URL')}\n"
-                        f"   Size: {result.get('width', 'N/A')}x{result.get('height', 'N/A')}\n"
-                    ),
-                )
-            )
-            image_url = result.get("image")
-            if image_url:
-                mime_type = guess_mime_type(image_url)
-                image_results.append(
-                    types.ImageContent(
-                        type="image",
-                        data=image_url,
-                        mimeType=mime_type,
-                        alt_text=result.get("title", "Image search result"),
-                    )
-                )
-
-        combined_results = []
-        # Interleave text and image results
-        for text, image in zip(text_results, image_results):
-            combined_results.extend([text, image])
-        return combined_results
-
-    elif name == "ddg-fetch-content":
-        url = arguments.get("url")
-        if not url:
-            raise ValueError("Missing url")
-        ctx = DummyContext()
-        content = await fetcher.fetch_and_parse(url, ctx)
-        return [
-            types.TextContent(
-                type="text", text=f"Fetched content from '{url}':\n\n{content}"
-            )
-        ]
     else:
-        raise ValueError(f"Unknown tool: {name}")
-
-
-async def main():
-    async with mcp.server.stdio.stdio_server() as (read_stream, write_stream):
-        await server.run(
-            read_stream,
-            write_stream,
-            InitializationOptions(
-                server_name="ddg-mcp",
-                server_version="0.1.0",
-                capabilities=server.get_capabilities(
-                    notification_options=NotificationOptions(), experimental_capabilities={}
-                ),
-            ),
-        )
+        mcp.run()
 
 
 if __name__ == "__main__":
