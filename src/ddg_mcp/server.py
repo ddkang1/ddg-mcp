@@ -490,30 +490,31 @@ def main():
     parser = argparse.ArgumentParser(description="Run DuckDuckGo MCP server")
 
     parser.add_argument(
-        "--sse",
-        action="store_true",
-        help="Run the server with SSE transport rather than STDIO (default: False)",
+        "--transport",
+        choices=["stdio", "sse"],
+        default="sse",
+        help="Transport protocol to use (stdio or sse, default: sse)",
     )
     parser.add_argument(
-        "--host", default=None, help="Host to bind to (default: 127.0.0.1)"
+        "--host", default="0.0.0.0", help="Host to bind to (default: 0.0.0.0)"
     )
     parser.add_argument(
-        "--port", type=int, default=None, help="Port to listen on (default: 8000)"
+        "--port", type=int, default=8000, help="Port to listen on (default: 8000)"
     )
     args = parser.parse_args()
 
-    if not args.sse and (args.host or args.port):
+    if args.transport != "sse" and (args.host != "0.0.0.0" or args.port != 8000):
         parser.error("Host and port arguments are only valid when using SSE transport.")
         sys.exit(1)
 
-    print(f"Starting DuckDuckGo MCP Server...")
+    print(f"Starting DuckDuckGo MCP Server with {args.transport} transport...")
     
-    if args.sse:
+    if args.transport == "sse":
         starlette_app = create_starlette_app(mcp_server, debug=True)
         uvicorn.run(
             starlette_app,
-            host=args.host if args.host else "127.0.0.1",
-            port=args.port if args.port else 8000,
+            host=args.host,
+            port=args.port,
         )
     else:
         mcp.run()

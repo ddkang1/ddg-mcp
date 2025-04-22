@@ -143,6 +143,26 @@ You can use these operators in your search keywords:
 
 ## Quickstart
 
+### Running the Server
+
+You can run the server directly:
+
+```bash
+ddg-mcp
+```
+
+By default, it uses SSE transport. To use stdio transport:
+
+```bash
+ddg-mcp --transport stdio
+```
+
+You can also specify host and port for SSE transport:
+
+```bash
+ddg-mcp --host 0.0.0.0 --port 3001
+```
+
 ### Install
 
 #### Claude Desktop
@@ -160,7 +180,9 @@ On Windows: `%APPDATA%/Claude/claude_desktop_config.json`
         "--directory",
         "/Users/shannon/Workspace/artivus/ddg-mcp",
         "run",
-        "ddg-mcp"
+        "ddg-mcp",
+        "--transport",
+        "stdio"
       ]
     }
   }
@@ -174,7 +196,9 @@ On Windows: `%APPDATA%/Claude/claude_desktop_config.json`
     "ddg-mcp": {
       "command": "uvx",
       "args": [
-        "ddg-mcp"
+        "ddg-mcp",
+        "--transport",
+        "stdio"
       ]
     }
   }
@@ -246,7 +270,9 @@ Use the search-results-summary prompt with query "space exploration" and style "
         "--directory",
         "/PATH/TO/YOUR/INSTALLATION/ddg-mcp",
         "run",
-        "ddg-mcp"
+        "ddg-mcp",
+        "--transport",
+        "stdio"
       ]
   },
 
@@ -312,7 +338,7 @@ experience, we strongly recommend using the [MCP Inspector](https://github.com/m
 You can launch the MCP Inspector via [`npm`](https://docs.npmjs.com/downloading-and-installing-node-js-and-npm) with this command:
 
 ```bash
-npx @modelcontextprotocol/inspector uv --directory /path/to/your/ddg-mcp run ddg-mcp
+npx @modelcontextprotocol/inspector uv --directory /path/to/your/ddg-mcp run ddg-mcp --transport stdio
 ```
 
 
