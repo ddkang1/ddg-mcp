@@ -1,4 +1,5 @@
 # ddg-mcp MCP server
+[![smithery badge](https://smithery.ai/badge/@ddkang1/ddg-mcp)](https://smithery.ai/add/@ddkang1/ddg-mcp)
 
 DuckDuckGo search API MCP - A server that provides DuckDuckGo search capabilities through the Model Context Protocol.
 
@@ -41,6 +42,14 @@ The server implements the following DuckDuckGo search tools:
 
 - Python 3.9 or higher
 - [uv](https://github.com/astral-sh/uv) (recommended) or pip
+
+### Installing via Smithery
+
+To install ddg-mcp for Claude Desktop automatically via [Smithery](https://smithery.ai/server/@ddkang1/ddg-mcp):
+
+```bash
+npx -y @smithery/cli install @ddkang1/ddg-mcp --client claude
+```
 
 ### Install from PyPI
 
