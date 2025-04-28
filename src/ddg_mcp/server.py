@@ -158,8 +158,7 @@ fetcher = WebContentFetcher()
 # ----------------------------
 
 # Initialize FastMCP server
-mcp = FastMCP("ddg-mcp")
-
+mcp = FastMCP("ddg-mcp", log_level="CRITICAL")
 
 @mcp.tool()
 async def ddg_text_search(
