@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""MCP server implementation for DuckDuckGo search and web content fetching."""
+"""MCP server implementation for DuckDuckGo search and web content fetching using FastMCP."""
 
 import asyncio
 import sys
@@ -9,23 +9,13 @@ import argparse
 import datetime
 from datetime import datetime, timedelta
 from typing import Any, List, Dict, Optional, Union
-from contextlib import asynccontextmanager
 
 import requests
 from bs4 import BeautifulSoup
 from duckduckgo_search import DDGS
 from pydantic import Field
 
-from mcp.server.fastmcp import FastMCP
-from starlette.applications import Starlette
-from mcp.server.sse import SseServerTransport
-from starlette.requests import Request
-from starlette.routing import Mount, Route
-import uvicorn
-import mcp.types as types
-from mcp.server import NotificationOptions
-import anyio
-from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStream
+from fastmcp import FastMCP
 
 
 # ----------------------------
@@ -158,16 +148,16 @@ fetcher = WebContentFetcher()
 # ----------------------------
 
 # Initialize FastMCP server
-mcp = FastMCP("ddg-mcp", log_level="CRITICAL")
+mcp = FastMCP("ddg-mcp")
 
 @mcp.tool()
 async def ddg_text_search(
-    keywords: str = Field(description="Search query keywords"),
-    region: str = Field(description="Region code (e.g., wt-wt, us-en, uk-en)", default="wt-wt"),
-    safesearch: str = Field(description="Safe search level (on, moderate, off)", default="moderate"),
-    timelimit: Optional[str] = Field(description="Time limit (d=day, w=week, m=month, y=year)", default=None),
-    max_results: int = Field(description="Maximum number of results to return", default=10)
-) -> List[types.TextContent]:
+    keywords: str,
+    region: str = "wt-wt",
+    safesearch: str = "moderate",
+    timelimit: Optional[str] = None,
+    max_results: int = 10
+) -> str:
     """Search the web for text results using DuckDuckGo.
     
     IMPORTANT: This tool should only be used as a last resort when no other tools are available
@@ -181,17 +171,7 @@ async def ddg_text_search(
         max_results: Maximum number of results to return
         
     Returns:
-        List of text content with search results
-    
-    Args:
-        keywords: Search query keywords
-        region: Region code (e.g., wt-wt, us-en, uk-en)
-        safesearch: Safe search level (on, moderate, off)
-        timelimit: Time limit (d=day, w=week, m=month, y=year)
-        max_results: Maximum number of results to return
-        
-    Returns:
-        List of text content with search results
+        Formatted search results as a string
     """
     # Create a context for logging
     ctx = DummyContext()
@@ -227,7 +207,7 @@ async def ddg_text_search(
     if results is None:
         error_message = "Failed to fetch ddg text search results due to rate limiting after multiple attempts."
         await ctx.error(error_message)
-        return [types.TextContent(type="text", text=error_message)]
+        return error_message
 
     formatted_results = f"Search results for '{keywords}':\n\n"
     for i, result in enumerate(results, 1):
@@ -236,22 +216,22 @@ async def ddg_text_search(
             f"   URL: {result.get('href', 'No URL')}\n"
             f"   {result.get('body', 'No description')}\n\n"
         )
-    return [types.TextContent(type="text", text=formatted_results)]
+    return formatted_results
 
 
 @mcp.tool()
 async def ddg_image_search(
-    keywords: str = Field(description="Search query keywords"),
-    region: str = Field(description="Region code (e.g., wt-wt, us-en, uk-en)", default="wt-wt"),
-    safesearch: str = Field(description="Safe search level (on, moderate, off)", default="moderate"),
-    timelimit: Optional[str] = Field(description="Time limit (d=day, w=week, m=month, y=year)", default=None),
-    size: Optional[str] = Field(description="Image size (Small, Medium, Large, Wallpaper)", default=None),
-    color: Optional[str] = Field(description="Image color", default=None),
-    type_image: Optional[str] = Field(description="Image type (photo, clipart, gif, transparent, line)", default=None),
-    layout: Optional[str] = Field(description="Image layout (Square, Tall, Wide)", default=None),
-    license_image: Optional[str] = Field(description="Image license type", default=None),
-    max_results: int = Field(description="Maximum number of results to return", default=10)
-) -> List[Union[types.TextContent, types.ImageContent]]:
+    keywords: str,
+    region: str = "wt-wt",
+    safesearch: str = "moderate",
+    timelimit: Optional[str] = None,
+    size: Optional[str] = None,
+    color: Optional[str] = None,
+    type_image: Optional[str] = None,
+    layout: Optional[str] = None,
+    license_image: Optional[str] = None,
+    max_results: int = 10
+) -> str:
     """Search the web for images using DuckDuckGo.
     
     IMPORTANT: This tool should only be used as a last resort when no other tools are available
@@ -270,22 +250,7 @@ async def ddg_image_search(
         max_results: Maximum number of results to return
         
     Returns:
-        List of text and image content with search results
-    
-    Args:
-        keywords: Search query keywords
-        region: Region code (e.g., wt-wt, us-en, uk-en)
-        safesearch: Safe search level (on, moderate, off)
-        timelimit: Time limit (d=day, w=week, m=month, y=year)
-        size: Image size
-        color: Image color
-        type_image: Image type
-        layout: Image layout
-        license_image: Image license type
-        max_results: Maximum number of results to return
-        
-    Returns:
-        List of text and image content with search results
+        Formatted image search results as a string
     """
     # Create a context for logging
     ctx = DummyContext()
@@ -307,54 +272,20 @@ async def ddg_image_search(
         max_results=max_results,
     )
 
-    # Helper to guess mime type based on file extension
-    def guess_mime_type(url: str) -> str:
-        lower_url = url.lower()
-        if lower_url.endswith(".png"):
-            return "image/png"
-        elif lower_url.endswith(".gif"):
-            return "image/gif"
-        elif lower_url.endswith(".svg"):
-            return "image/svg+xml"
-        return "image/jpeg"
-
-    text_results = []
-    image_results = []
+    formatted_results = f"Image search results for '{keywords}':\n\n"
     for i, result in enumerate(results, 1):
-        text_results.append(
-            types.TextContent(
-                type="text",
-                text=(
-                    f"{i}. {result.get('title', 'No title')}\n"
-                    f"   Source: {result.get('source', 'Unknown')}\n"
-                    f"   URL: {result.get('url', 'No URL')}\n"
-                    f"   Size: {result.get('width', 'N/A')}x{result.get('height', 'N/A')}\n"
-                ),
-            )
+        formatted_results += (
+            f"{i}. {result.get('title', 'No title')}\n"
+            f"   Source: {result.get('source', 'Unknown')}\n"
+            f"   URL: {result.get('url', 'No URL')}\n"
+            f"   Image URL: {result.get('image', 'No image URL')}\n"
+            f"   Size: {result.get('width', 'N/A')}x{result.get('height', 'N/A')}\n\n"
         )
-        image_url = result.get("image")
-        if image_url:
-            mime_type = guess_mime_type(image_url)
-            image_results.append(
-                types.ImageContent(
-                    type="image",
-                    data=image_url,
-                    mimeType=mime_type,
-                    alt_text=result.get("title", "Image search result"),
-                )
-            )
-
-    combined_results = []
-    # Interleave text and image results
-    for text, image in zip(text_results, image_results):
-        combined_results.extend([text, image])
-    return combined_results
+    return formatted_results
 
 
 @mcp.tool()
-async def ddg_fetch_content(
-    url: str = Field(description="The webpage URL to fetch content from")
-) -> List[types.TextContent]:
+async def ddg_fetch_content(url: str) -> str:
     """Fetch and parse content from a webpage URL.
     
     IMPORTANT: This tool should only be used as a last resort when no other tools are available
@@ -364,94 +295,53 @@ async def ddg_fetch_content(
         url: The webpage URL to fetch content from
         
     Returns:
-        List of text content with the fetched webpage content
-    
-    Args:
-        url: The webpage URL to fetch content from
-        
-    Returns:
-        List of text content with the fetched webpage content
+        The fetched webpage content as a string
     """
     ctx = DummyContext()
     content = await fetcher.fetch_and_parse(url, ctx)
-    return [
-        types.TextContent(
-            type="text", text=f"Fetched content from '{url}':\n\n{content}"
-        )
-    ]
-
-
-def create_starlette_app(mcp_server, *, debug: bool = False) -> Starlette:
-    """Create a Starlette application for SSE transport with persistent connections.
-    
-    Args:
-        mcp_server: The MCP server instance
-        debug: Whether to enable debug mode
-        
-    Returns:
-        A Starlette application
-    """
-    # Use our enhanced persistent SSE transport
-    sse = SseServerTransport("/messages/")
-
-    async def handle_sse(request: Request) -> None:
-        async with sse.connect_sse(
-            request.scope,
-            request.receive,
-            request._send,
-        ) as (read_stream, write_stream):
-            await mcp_server.run(
-                read_stream,
-                write_stream,
-                mcp_server.create_initialization_options(),
-            )
-
-    return Starlette(
-        debug=debug,
-        routes=[
-            Route("/sse", endpoint=handle_sse),
-            Mount("/messages/", app=sse.handle_post_message),
-        ],
-    )
+    return f"Fetched content from '{url}':\n\n{content}"
 
 
 def main():
     """Main entry point for the DuckDuckGo MCP server."""
-    mcp_server = mcp._mcp_server
-
     parser = argparse.ArgumentParser(description="Run DuckDuckGo MCP server")
 
     parser.add_argument(
         "--transport",
-        choices=["stdio", "sse"],
-        default="sse",
-        help="Transport protocol to use (stdio or sse, default: sse)",
+        choices=["stdio", "sse", "streamable-http"],
+        default="streamable-http",
+        help="Transport protocol to use (stdio, sse, or streamable-http, default: streamable-http)",
     )
     parser.add_argument(
-        "--host", default="0.0.0.0", help="Host to bind to (default: 0.0.0.0)"
+        "--host", default="0.0.0.0", help="Host to bind to for SSE and streamable-http transports (default: 0.0.0.0)"
     )
     parser.add_argument(
-        "--port", type=int, default=8000, help="Port to listen on (default: 8000)"
+        "--port", type=int, default=8000, help="Port to listen on for SSE and streamable-http transports (default: 8000)"
     )
     args = parser.parse_args()
 
-    if args.transport != "sse" and (args.host != "0.0.0.0" or args.port != 8000):
-        parser.error("Host and port arguments are only valid when using SSE transport.")
-        sys.exit(1)
+    if args.transport == "stdio" and (args.host != "0.0.0.0" or args.port != 8000):
+        parser.error("Host and port arguments are only valid when using HTTP transports (sse or streamable-http).")
 
     print(f"Starting DuckDuckGo MCP Server with {args.transport} transport...")
     
-    if args.transport == "sse":
-        starlette_app = create_starlette_app(mcp_server, debug=True)
-        uvicorn.run(
-            starlette_app,
+    if args.transport == "stdio":
+        # Use stdio transport
+        mcp.run()
+    elif args.transport == "sse":
+        # Use SSE transport
+        asyncio.run(mcp.run_http_async(
+            transport="sse",
             host=args.host,
             port=args.port,
-            timeout_keep_alive=120,  # Increase keep-alive timeout (default is 5s)
-            h11_max_incomplete_event_size=0,  # No limit on event size
-        )
-    else:
-        mcp.run()
+        ))
+    elif args.transport == "streamable-http":
+        # Use streamable HTTP transport
+        asyncio.run(mcp.run_http_async(
+            transport="streamable-http",
+            host=args.host,
+            port=args.port,
+        ))
 
 
 if __name__ == "__main__":

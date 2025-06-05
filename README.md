@@ -151,13 +151,19 @@ You can run the server directly:
 ddg-mcp
 ```
 
-By default, it uses SSE transport. To use stdio transport:
+By default, it uses streamable-http transport. To use stdio transport:
 
 ```bash
 ddg-mcp --transport stdio
 ```
 
-You can also specify host and port for SSE transport:
+To use streamable-http transport:
+
+```bash
+ddg-mcp --transport streamable-http
+```
+
+You can also specify host and port for SSE and streamable-http transports:
 
 ```bash
 ddg-mcp --host 0.0.0.0 --port 3001

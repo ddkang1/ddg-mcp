@@ -1,12 +1,12 @@
 [project]
 name = "ddg-mcp"
-version = "0.2.1"
+version = "0.3.0"
 description = "DuckDuckGo search API MCP"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
   "duckduckgo-search",
-  "mcp",
+  "fastmcp>=2.6.1",
   "beautifulsoup4",
   "lxml",
   "requests",
